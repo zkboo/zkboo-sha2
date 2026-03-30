@@ -14,4 +14,4 @@ Use at your own risk.
 
 ## License
 
-[LGPLv3 © ZKBoo contributors.](LICENSE)
+[LGPLv3 © contributors.](LICENSE)
