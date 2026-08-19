@@ -18,7 +18,8 @@ pub fn ch<B: Backend>(
     y: WordRef<B, u64>,
     z: WordRef<B, u64>,
 ) -> WordRef<B, u64> {
-    return (x.clone() & y) ^ (!x & z);
+    // Single-AND form of `(x & y) ^ (!x & z)`: `z ^ (x & (y ^ z))`.
+    return z.clone() ^ (x & (y ^ z));
 }
 
 pub fn maj<B: Backend>(
@@ -26,7 +27,8 @@ pub fn maj<B: Backend>(
     y: WordRef<B, u64>,
     z: WordRef<B, u64>,
 ) -> WordRef<B, u64> {
-    return (x.clone() & y.clone()) ^ (x & z.clone()) ^ (y & z);
+    // Single-AND form of `(x&y) ^ (x&z) ^ (y&z)`: `x ^ ((x ^ y) & (x ^ z))`.
+    return x.clone() ^ ((x.clone() ^ y) & (x ^ z));
 }
 
 pub fn bsig0<B: Backend>(x: WordRef<B, u64>) -> WordRef<B, u64> {
@@ -69,11 +71,39 @@ pub const K_WORDS: [u64; 80] = [
     0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817,
 ];
 
+/// Packs a byte string whose length is a multiple of 8 into big-endian [u64] words.
+fn bytes_to_u64<B: Backend>(bytes: Vec<WordRef<B, u8>>) -> Vec<WordRef<B, u64>> {
+    assert!(bytes.len() % 8 == 0, "byte length must be a multiple of 8");
+    let mut words: Vec<WordRef<B, u64>> = Vec::with_capacity(bytes.len() / 8);
+    let mut chunk: Vec<WordRef<B, u8>> = Vec::with_capacity(8);
+    for byte in bytes {
+        chunk.push(byte);
+        if chunk.len() == 8 {
+            words.push(WordRef::<B, u64>::from_be_bytes(core::mem::take(&mut chunk)).unwrap());
+        }
+    }
+    return words;
+}
+
 /// The SHA-384/SHA-512 padding function.
 pub fn pad_u64<B: Backend>(
     allocator: Allocator<B>,
-    mut msg: Vec<WordRef<B, u8>>,
+    msg: Vec<WordRef<B, u8>>,
 ) -> Vec<WordRef<B, u64>> {
+    return pad_u64_with_prefix(allocator, msg, 0);
+}
+
+/// Variant of [pad_u64] for a message logically preceded by `prefix_bytes` already-processed bytes
+/// (used for midstate resumption).
+pub fn pad_u64_with_prefix<B: Backend>(
+    allocator: Allocator<B>,
+    mut msg: Vec<WordRef<B, u8>>,
+    prefix_bytes: usize,
+) -> Vec<WordRef<B, u64>> {
+    assert!(
+        prefix_bytes % SHA512_BLOCKSIZE == 0,
+        "prefix must be a whole number of blocks"
+    );
     let l = msg.len();
     let l_mod128 = l % 128;
     let k = if l_mod128 <= 111 {
@@ -82,19 +112,10 @@ pub fn pad_u64<B: Backend>(
         239 - l_mod128
     };
     msg.push(allocator.alloc(0x80u8));
-    // msg.append(&mut allocator.alloc_vec(&vec![0u8; k]));
     msg.extend((0..k).into_iter().map(|_| allocator.alloc(0u8)));
     assert!(msg.len() % 8 == 0);
-    let mut msg_u64: Vec<WordRef<B, u64>> = Vec::new();
-    let mut chunk: Vec<WordRef<B, u8>> = Vec::new();
-    for byte in msg {
-        chunk.push(byte);
-        if chunk.len() == 8 {
-            msg_u64.push(WordRef::<B, u64>::from_be_bytes(chunk.try_into().unwrap()).unwrap());
-            chunk = Vec::new();
-        }
-    }
-    let bit_len = (l as u128) * 8;
+    let mut msg_u64 = bytes_to_u64(msg);
+    let bit_len = ((prefix_bytes + l) as u128) * 8;
     msg_u64.push(allocator.alloc((bit_len >> 64) as u64));
     msg_u64.push(allocator.alloc(bit_len as u64));
     return msg_u64;
@@ -102,12 +123,25 @@ pub fn pad_u64<B: Backend>(
 
 pub const SHA512_BLOCKSIZE: usize = 128;
 
-/// The SHA-512 compression function.
+/// The SHA-512 compression function, starting from the public constant `init_hash`.
 #[allow(non_snake_case)]
 pub fn compress_u64<B: Backend>(
     allocator: Allocator<B>,
     msg: Vec<WordRef<B, u64>>,
     init_hash: &[u64; 8],
+) -> [WordRef<B, u64>; 8] {
+    let init: [WordRef<B, u64>; 8] = array::from_fn(|i| allocator.alloc(init_hash[i]));
+    return compress_u64_from(allocator, msg, init);
+}
+
+/// Variant of [compress_u64] resuming from an arbitrary (possibly secret) chaining value `init`
+/// instead of a public constant — the primitive behind midstate caching (e.g. resuming after a
+/// fixed HMAC key block).
+#[allow(non_snake_case)]
+pub fn compress_u64_from<B: Backend>(
+    allocator: Allocator<B>,
+    msg: Vec<WordRef<B, u64>>,
+    init: [WordRef<B, u64>; 8],
 ) -> [WordRef<B, u64>; 8] {
     const SHA512_BLOCKSIZE_U64: usize = SHA512_BLOCKSIZE / 8;
     let n = msg.len() / SHA512_BLOCKSIZE_U64;
@@ -116,8 +150,7 @@ pub fn compress_u64<B: Backend>(
         msg.len(),
         "Message must be padded to multiple of 16 u64 words"
     );
-    // let mut H = allocator.alloc_array(*init_hash);
-    let mut H: [WordRef<B, u64>; 8] = array::from_fn(|i| allocator.alloc(init_hash[i]));
+    let mut H: [WordRef<B, u64>; 8] = init;
     for i in 0..n {
         let block = &msg.as_slice()[i * SHA512_BLOCKSIZE_U64..(i + 1) * SHA512_BLOCKSIZE_U64];
         let mut W: [WordRef<B, u64>; 80] = core::array::from_fn(|t| {
@@ -229,4 +262,64 @@ pub fn sha512bytes<B: Backend>(
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
+}
+
+/// A reusable HMAC-SHA512 keyed state.
+pub struct Sha512Hmac<B: Backend> {
+    ipad_midstate: [WordRef<B, u64>; 8],
+    opad_midstate: [WordRef<B, u64>; 8],
+}
+
+impl<B: Backend> Sha512Hmac<B> {
+    /// Prepares the keyed state for `key`, compressing the two key blocks once.
+    pub fn new(allocator: Allocator<B>, key: Vec<WordRef<B, u8>>) -> Self {
+        let mut key = key;
+        if key.len() > SHA512_BLOCKSIZE {
+            key = sha512(allocator.clone(), key)
+                .into_iter()
+                .flat_map(WordRef::<B, u64>::into_be_bytes)
+                .collect();
+        }
+        if key.len() < SHA512_BLOCKSIZE {
+            key.extend((0..SHA512_BLOCKSIZE - key.len()).map(|_| allocator.alloc(0u8)));
+        }
+        let ipad_block = bytes_to_u64(key.iter().map(|w| w.clone() ^ 0x36u8).collect());
+        let opad_block = bytes_to_u64(key.into_iter().map(|w| w ^ 0x5cu8).collect());
+        let iv_i: [WordRef<B, u64>; 8] = array::from_fn(|i| allocator.alloc(SHA512_INIT_HASH[i]));
+        let iv_o: [WordRef<B, u64>; 8] = array::from_fn(|i| allocator.alloc(SHA512_INIT_HASH[i]));
+        return Sha512Hmac {
+            ipad_midstate: compress_u64_from(allocator.clone(), ipad_block, iv_i),
+            opad_midstate: compress_u64_from(allocator, opad_block, iv_o),
+        };
+    }
+
+    /// Computes `HMAC-SHA512(key, msg)` reusing the cached key midstates.
+    pub fn mac(&self, allocator: Allocator<B>, msg: Vec<WordRef<B, u8>>) -> [WordRef<B, u64>; 8] {
+        let inner_blocks = pad_u64_with_prefix(allocator.clone(), msg, SHA512_BLOCKSIZE);
+        let ipad = array::from_fn(|i| self.ipad_midstate[i].clone());
+        let inner = compress_u64_from(allocator.clone(), inner_blocks, ipad);
+        let inner_bytes: Vec<WordRef<B, u8>> = inner
+            .into_iter()
+            .flat_map(WordRef::<B, u64>::into_be_bytes)
+            .collect();
+        let outer_blocks = pad_u64_with_prefix(allocator.clone(), inner_bytes, SHA512_BLOCKSIZE);
+        let opad = array::from_fn(|i| self.opad_midstate[i].clone());
+        return compress_u64_from(allocator, outer_blocks, opad);
+    }
+
+    /// Convenience [Sha512Hmac::mac] returning the 64-byte MAC.
+    pub fn mac_bytes(
+        &self,
+        allocator: Allocator<B>,
+        msg: Vec<WordRef<B, u8>>,
+    ) -> [WordRef<B, u8>; 64] {
+        return self
+            .mac(allocator, msg)
+            .into_iter()
+            .flat_map(WordRef::<B, u64>::into_be_bytes)
+            .collect::<Vec<_>>()
+            .try_into()
+            .ok()
+            .expect("64 MAC bytes");
+    }
 }

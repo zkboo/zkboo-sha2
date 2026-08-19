@@ -3,7 +3,6 @@
 //! Implementation of SHA-224 and SHA-256.
 
 use alloc::vec::Vec;
-use core::array;
 use zkboo::backend::{Allocator, Backend, WordRef};
 
 fn zip_arrays<A, B, const N: usize>(lhs: [A; N], rhs: [B; N]) -> [(A, B); N] {
@@ -17,7 +16,8 @@ pub fn ch<B: Backend>(
     y: WordRef<B, u32>,
     z: WordRef<B, u32>,
 ) -> WordRef<B, u32> {
-    return (x.clone() & y) ^ (!x & z);
+    // Single-AND form of `(x & y) ^ (!x & z)`: `z ^ (x & (y ^ z))`.
+    return z.clone() ^ (x & (y ^ z));
 }
 
 pub fn maj<B: Backend>(
@@ -25,7 +25,8 @@ pub fn maj<B: Backend>(
     y: WordRef<B, u32>,
     z: WordRef<B, u32>,
 ) -> WordRef<B, u32> {
-    return (x.clone() & y.clone()) ^ (x & z.clone()) ^ (y & z);
+    // Single-AND form of `(x&y) ^ (x&z) ^ (y&z)`: `x ^ ((x ^ y) & (x ^ z))`.
+    return x.clone() ^ ((x.clone() ^ y) & (x ^ z));
 }
 
 pub fn bsig0<B: Backend>(x: WordRef<B, u32>) -> WordRef<B, u32> {
@@ -56,11 +57,39 @@ pub const K_WORDS: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
+/// Packs a byte string whose length is a multiple of 4 into big-endian [u32] words.
+fn bytes_to_u32<B: Backend>(bytes: Vec<WordRef<B, u8>>) -> Vec<WordRef<B, u32>> {
+    assert!(bytes.len() % 4 == 0, "byte length must be a multiple of 4");
+    let mut words: Vec<WordRef<B, u32>> = Vec::with_capacity(bytes.len() / 4);
+    let mut chunk: Vec<WordRef<B, u8>> = Vec::with_capacity(4);
+    for byte in bytes {
+        chunk.push(byte);
+        if chunk.len() == 4 {
+            words.push(WordRef::<B, u32>::from_be_bytes(core::mem::take(&mut chunk)).unwrap());
+        }
+    }
+    return words;
+}
+
 /// The SHA-224/SHA-256 padding function.
 pub fn pad_u32<B: Backend>(
     allocator: Allocator<B>,
-    mut msg: Vec<WordRef<B, u8>>,
+    msg: Vec<WordRef<B, u8>>,
 ) -> Vec<WordRef<B, u32>> {
+    return pad_u32_with_prefix(allocator, msg, 0);
+}
+
+/// Variant of [pad_u32] for a message logically preceded by `prefix_bytes` already-processed bytes
+/// (used for midstate resumption).
+pub fn pad_u32_with_prefix<B: Backend>(
+    allocator: Allocator<B>,
+    mut msg: Vec<WordRef<B, u8>>,
+    prefix_bytes: usize,
+) -> Vec<WordRef<B, u32>> {
+    assert!(
+        prefix_bytes % SHA256_BLOCKSIZE == 0,
+        "prefix must be a whole number of blocks"
+    );
     let l = msg.len();
     let l_mod64 = l % 64;
     let k = if l_mod64 <= 55 {
@@ -69,19 +98,10 @@ pub fn pad_u32<B: Backend>(
         119 - l_mod64
     };
     msg.push(allocator.alloc(0x80u8));
-    // msg.append(&mut allocator.alloc_vec(&vec![0u8; k]));
     msg.extend((0..k).into_iter().map(|_| allocator.alloc(0u8)));
     assert!(msg.len() % 4 == 0);
-    let mut msg_u32: Vec<WordRef<B, u32>> = Vec::new();
-    let mut chunk: Vec<WordRef<B, u8>> = Vec::new();
-    for byte in msg {
-        chunk.push(byte);
-        if chunk.len() == 4 {
-            msg_u32.push(WordRef::<B, u32>::from_be_bytes(chunk.try_into().unwrap()).unwrap());
-            chunk = Vec::new();
-        }
-    }
-    let bit_len = (l as u64) * 8;
+    let mut msg_u32 = bytes_to_u32(msg);
+    let bit_len = ((prefix_bytes + l) as u64) * 8;
     msg_u32.push(allocator.alloc((bit_len >> 32) as u32));
     msg_u32.push(allocator.alloc(bit_len as u32));
     return msg_u32;
@@ -89,12 +109,25 @@ pub fn pad_u32<B: Backend>(
 
 pub const SHA256_BLOCKSIZE: usize = 64;
 
-/// The SHA-256 compression function.
+/// The SHA-256 compression function, starting from the public constant `init_hash`.
 #[allow(non_snake_case)]
 pub fn compress_u32<B: Backend>(
     allocator: Allocator<B>,
     msg: Vec<WordRef<B, u32>>,
     init_hash: &[u32; 8],
+) -> [WordRef<B, u32>; 8] {
+    let init: [WordRef<B, u32>; 8] = core::array::from_fn(|i| allocator.alloc(init_hash[i]));
+    return compress_u32_from(allocator, msg, init);
+}
+
+/// Variant of [compress_u32] resuming from an arbitrary (possibly secret) chaining value `init`
+/// instead of a public constant — the primitive behind midstate caching (e.g. resuming after a
+/// fixed prefix block).
+#[allow(non_snake_case)]
+pub fn compress_u32_from<B: Backend>(
+    allocator: Allocator<B>,
+    msg: Vec<WordRef<B, u32>>,
+    init: [WordRef<B, u32>; 8],
 ) -> [WordRef<B, u32>; 8] {
     const SHA256_BLOCKSIZE_U32: usize = SHA256_BLOCKSIZE / 4;
     let n = msg.len() / SHA256_BLOCKSIZE_U32;
@@ -103,8 +136,7 @@ pub fn compress_u32<B: Backend>(
         msg.len(),
         "Message must be padded to multiple of 16 u32 words"
     );
-    // let mut H = allocator.alloc_array(*init_hash);
-    let mut H: [WordRef<B, u32>; 8] = array::from_fn(|i| allocator.alloc(init_hash[i]));
+    let mut H: [WordRef<B, u32>; 8] = init;
     for i in 0..n {
         let block = &msg.as_slice()[i * SHA256_BLOCKSIZE_U32..(i + 1) * SHA256_BLOCKSIZE_U32];
         let mut W: [WordRef<B, u32>; 64] = core::array::from_fn(|t| {
