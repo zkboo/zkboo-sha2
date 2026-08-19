@@ -94,8 +94,9 @@ pub fn pad_u64<B: Backend>(
             chunk = Vec::new();
         }
     }
-    msg_u64.push(allocator.alloc(((l * 8) as u128 >> 64) as u64));
-    msg_u64.push(allocator.alloc((l * 8) as u64));
+    let bit_len = (l as u128) * 8;
+    msg_u64.push(allocator.alloc((bit_len >> 64) as u64));
+    msg_u64.push(allocator.alloc(bit_len as u64));
     return msg_u64;
 }
 

@@ -81,8 +81,9 @@ pub fn pad_u32<B: Backend>(
             chunk = Vec::new();
         }
     }
-    msg_u32.push(allocator.alloc(((l * 8) as u64 >> 32) as u32));
-    msg_u32.push(allocator.alloc((l * 8) as u32));
+    let bit_len = (l as u64) * 8;
+    msg_u32.push(allocator.alloc((bit_len >> 32) as u32));
+    msg_u32.push(allocator.alloc(bit_len as u32));
     return msg_u32;
 }
 
