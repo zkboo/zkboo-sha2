@@ -6,10 +6,9 @@
 
 SHA-2 primitives for the [ZKBoo](https://crates.io/crates/zkboo) ecosystem.
 
-## 🚧 Warning 🚧
+## ⚠️ Unaudited ⚠️
 
-This crate is work in progress, not yet suitable for use in production.
-Security has not been reviewed and performance has not been optimised.
+This implementation has not undergone an external security review.
 Use at your own risk.
 
 ## License

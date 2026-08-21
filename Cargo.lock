@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "zkboo-sha2"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "hex",

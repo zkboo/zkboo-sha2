@@ -1,6 +1,6 @@
 [package]
 name = "zkboo-sha2"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "SHA-2 primitives for the ZKBoo ecosystem."
 license = "LGPL-3.0-or-later"
@@ -10,12 +10,12 @@ keywords = ["zk", "zero-knowledge", "zkboo"]
 categories = ["cryptography", "no-std"]
 
 [dependencies]
-zkboo = "0.1.0"
+zkboo = "1.0.0"
 
 [dev-dependencies]
 hex = "0.4.3"
 blake3 = "1.8.3"
-zkboo = { version = "0.1.0", features = ["parallel"] }
+zkboo = { version = "1.0.0", features = ["parallel"] }
 zeroize = { version = "1.8.2", default-features = false, features = [
     "zeroize_derive",
     "alloc",
