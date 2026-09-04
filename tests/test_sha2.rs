@@ -16,6 +16,7 @@ use zkboo_sha2::{
     sha256::{sha224bytes, sha256bytes},
     sha512::{sha384bytes, sha512bytes},
 };
+use zkboo::executor::ExecOptions;
 
 trait Sha2Circuit: Circuit {
     fn new(msg: Vec<u8>) -> Self;
@@ -52,7 +53,7 @@ fn run_sha_test<C: Sha2Circuit + Sync>(test_vectors: &[(&[u8], usize, &[u8])]) {
     for (msg, repeat, expected) in test_vectors {
         let msg = msg.repeat(*repeat);
         let circuit = C::new(msg.clone());
-        let output = exec::<_, WP>(&circuit).u8;
+        let output = exec::<_, WP, _>(&circuit, ExecOptions::new()).u8;
         let expected: Vec<u8> = expected.to_vec();
         assert_eq!(output, expected, "on input {:?}", msg);
         test_proof(&circuit);

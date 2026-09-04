@@ -8,6 +8,9 @@ use zkboo::{
     prover::{par_prove, prove, views::OwnedFlexibleWordTriplePool},
     verifier::{par_verify, replay::OwnedFlexibleWordPairPool, verify},
 };
+use zkboo::executor::ExecOptions;
+use zkboo::prover::proof::ProofOptions;
+use zkboo::verifier::VerifyOptions;
 
 type WP = OwnedFlexibleWordPool<usize>;
 type WTP = OwnedFlexibleWordTriplePool<usize>;
@@ -54,22 +57,22 @@ const TEST_PROOF: bool = true;
 
 pub fn test_proof<C: Circuit + Sync>(circuit: &C) {
     if TEST_PROOF {
-        let expected_output = exec::<C, WP>(circuit);
+        let expected_output = exec::<C, WP, _>(circuit, ExecOptions::new());
         let mut proof;
         let mut is_valid;
         // [seq prove, seq verify]
-        proof = prove::<C, H, PS, PV, S, WTP>(circuit, NUM_PROOF_ITERS, SEED_ENTROPY, &[]);
-        is_valid = verify::<C, H, PV, S, WPP>(circuit, &expected_output, &proof, &[])
+        proof = prove::<C, H, PS, PV, S, _, WTP, _>(circuit, NUM_PROOF_ITERS, SEED_ENTROPY, &[], ProofOptions::new());
+        is_valid = verify::<C, H, PV, S, WPP, _>(circuit, &expected_output, &proof, &[], VerifyOptions::new())
             .expect("Error verifying proof [seq prove, seq verify]");
         assert!(is_valid, "Proof is invalid [seq prove, seq verify].");
         // [seq prove, par verify]
-        proof = prove::<C, H, PS, PV, S, WTP>(circuit, NUM_PROOF_ITERS, SEED_ENTROPY, &[]);
+        proof = prove::<C, H, PS, PV, S, _, WTP, _>(circuit, NUM_PROOF_ITERS, SEED_ENTROPY, &[], ProofOptions::new());
         is_valid = par_verify::<C, H, PV, S, WPP>(circuit, &expected_output, &proof, &[])
             .expect("Error verifying proof [seq prove, seq verify]");
         assert!(is_valid, "Proof is invalid [seq prove, seq verify].");
         // [par prove, seq verify]
         proof = par_prove::<C, H, PS, PV, S, WTP>(circuit, NUM_PROOF_ITERS, SEED_ENTROPY, &[]);
-        is_valid = verify::<C, H, PV, S, WPP>(circuit, &expected_output, &proof, &[])
+        is_valid = verify::<C, H, PV, S, WPP, _>(circuit, &expected_output, &proof, &[], VerifyOptions::new())
             .expect("Error verifying proof [seq prove, seq verify]");
         assert!(is_valid, "Proof is invalid [seq prove, seq verify].");
         // [par prove, par verify]

@@ -17,6 +17,7 @@ use zkboo_sha2::{
     sha512::{Sha512Hmac, compress_u64_from, pad_u64_with_prefix},
     sha512bytes,
 };
+use zkboo::executor::ExecOptions;
 
 type WP = OwnedFlexibleWordPool<usize>;
 
@@ -124,7 +125,7 @@ impl Circuit for HmacKeyed {
 
 #[test]
 fn test_sha256_midstate_matches_direct() {
-    let out = exec::<_, WP>(&Sha256Midstate).u8;
+    let out = exec::<_, WP, _>(&Sha256Midstate, ExecOptions::new()).u8;
     assert_eq!(out.len(), 64);
     assert_eq!(
         &out[..32],
@@ -135,7 +136,7 @@ fn test_sha256_midstate_matches_direct() {
 
 #[test]
 fn test_sha512_midstate_matches_direct() {
-    let out = exec::<_, WP>(&Sha512Midstate).u8;
+    let out = exec::<_, WP, _>(&Sha512Midstate, ExecOptions::new()).u8;
     assert_eq!(out.len(), 128);
     assert_eq!(
         &out[..64],
@@ -147,10 +148,10 @@ fn test_sha512_midstate_matches_direct() {
 #[test]
 fn test_keyed_hmac_matches_reference() {
     // RFC 4231 Test Case 6: 131-byte key (>block), "Test Using Larger Than Block-Size Key".
-    let out = exec::<_, WP>(&HmacKeyed {
+    let out = exec::<_, WP, _>(&HmacKeyed {
         key: vec![0xaa; 131],
         msg: b"Test Using Larger Than Block-Size Key - Hash Key First".to_vec(),
-    })
+    }, ExecOptions::new())
     .u8;
     assert_eq!(
         to_hex(&out),
